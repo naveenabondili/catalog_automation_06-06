@@ -9,12 +9,20 @@ dotenv.config({ path: path.join(__dirname, "../../.env") });
 const instanceUrl = process.env.SN_INSTANCE_URL;
 const user = process.env.SN_USER;
 const pass = process.env.SN_PASS;
+const offlineModeByEnv = process.env.SN_OFFLINE_MODE === "true";
+
+const parseTimeoutMs = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const snApiTimeoutMs = parseTimeoutMs(process.env.SN_API_TIMEOUT_MS, 30000);
 
 const snClient = instanceUrl
   ? axios.create({
       baseURL: `${instanceUrl}/api/now`,
       auth: { username: user, password: pass },
-      timeout: 15000,
+      timeout: snApiTimeoutMs,
     })
   : null;
 
@@ -142,7 +150,7 @@ export async function createBusinessRule(ast, catalogItemId, updateSetId) {
     status: "generated",
   };
 
-  if (!snClient) return brLocal;
+  if (!snClient || offlineModeByEnv) return brLocal;
 
   try {
     const payload = {
@@ -186,7 +194,7 @@ export async function createClientScript(ast, catalogItemId, updateSetId) {
     status: "generated",
   };
 
-  if (!snClient) return csLocal;
+  if (!snClient || offlineModeByEnv) return csLocal;
 
   try {
     const payload = {

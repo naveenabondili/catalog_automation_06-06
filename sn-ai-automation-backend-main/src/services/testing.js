@@ -9,12 +9,20 @@ dotenv.config({ path: path.join(__dirname, "../../.env") });
 const instanceUrl = process.env.SN_INSTANCE_URL;
 const user = process.env.SN_USER;
 const pass = process.env.SN_PASS;
+const offlineModeByEnv = process.env.SN_OFFLINE_MODE === "true";
+
+const parseTimeoutMs = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const snApiTimeoutMs = parseTimeoutMs(process.env.SN_API_TIMEOUT_MS, 30000);
 
 const snClient = instanceUrl
   ? axios.create({
       baseURL: `${instanceUrl}/api/now`,
       auth: { username: user, password: pass },
-      timeout: 30000,
+      timeout: snApiTimeoutMs,
     })
   : null;
 
@@ -61,7 +69,7 @@ export async function generateATFTestCase(client, ast, catalogItemId) {
     status: "draft",
   };
 
-  if (!snClient) return testCaseLocal;
+  if (!snClient || offlineModeByEnv) return testCaseLocal;
 
   try {
     // Create ATF test suite
@@ -102,7 +110,7 @@ export async function generateATFTestCase(client, ast, catalogItemId) {
 export async function executeATFTestCase(client, testCaseId) {
   console.log("Executing ATF test case:", testCaseId);
 
-  if (!snClient || testCaseId.startsWith("atf_")) {
+  if (!snClient || offlineModeByEnv || testCaseId.startsWith("atf_")) {
     // Local mock execution for locally-generated test cases
     await new Promise((resolve) => setTimeout(resolve, 800));
     return {

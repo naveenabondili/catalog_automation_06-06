@@ -5,10 +5,23 @@ dotenv.config();
 
 const openRouterKey = process.env.OPENROUTER_API_KEY;
 const MODEL = "meta-llama/llama-3.3-70b-instruct";
+const openRouterTimeoutMs = Number.parseInt(process.env.OPENROUTER_TIMEOUT_MS || "60000", 10) || 60000;
+const disableRemoteAiByEnv = process.env.DISABLE_REMOTE_AI === "true";
+let remoteAiUnavailableForProcess = disableRemoteAiByEnv;
+
+function isConnectivityError(err) {
+  const code = err?.code || "";
+  return ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ECONNABORTED"].includes(code);
+}
 
 export async function interpretWithGemini(text) {
   if (!openRouterKey) {
     console.warn("⚠️  OpenRouter API key not configured, using fallback interpreter");
+    return interpretWithFallback(text);
+  }
+
+  if (remoteAiUnavailableForProcess) {
+    console.log("ℹ️  Remote AI disabled/unavailable; using fallback interpreter.");
     return interpretWithFallback(text);
   }
 
@@ -75,7 +88,7 @@ Include approvalGroups when group-level approval is mentioned.`;
           "HTTP-Referer": "http://localhost:3001",
           "X-Title": "ServiceNow AI Automation",
         },
-        timeout: 30000,
+        timeout: openRouterTimeoutMs,
       }
     );
 
@@ -152,6 +165,10 @@ Include approvalGroups when group-level approval is mentioned.`;
     console.error("❌ OpenRouter interpretation failed:", err.message);
     if (err.response?.data?.error) {
       console.error("   Error:", JSON.stringify(err.response.data.error));
+    }
+    if (isConnectivityError(err)) {
+      remoteAiUnavailableForProcess = true;
+      console.warn("⚠️  Disabling remote AI for this process due to connectivity errors.");
     }
     return interpretWithFallback(text);
   }

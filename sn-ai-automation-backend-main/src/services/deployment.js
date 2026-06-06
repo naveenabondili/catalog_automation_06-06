@@ -13,6 +13,14 @@ const user = process.env.SN_USER;
 const pass = process.env.SN_PASS;
 const disableTlsVerify = process.env.DISABLE_TLS_VERIFY === "true";
 const snCaFile = process.env.SN_CA_FILE;
+const offlineModeByEnv = process.env.SN_OFFLINE_MODE === "true";
+
+const parseTimeoutMs = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const snApiTimeoutMs = parseTimeoutMs(process.env.SN_API_TIMEOUT_MS, 30000);
 
 function buildHttpsAgent() {
   if (disableTlsVerify) {
@@ -32,6 +40,11 @@ function buildHttpsAgent() {
 
 const httpsAgent = buildHttpsAgent();
 
+function isConnectivityError(err) {
+  const code = err?.code || "";
+  return ["ECONNREFUSED", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENOTFOUND", "ECONNABORTED"].includes(code);
+}
+
 console.log("🔧 Deployment Service Init:");
 console.log("  Instance:", instanceUrl);
 console.log("  User:", user);
@@ -44,7 +57,7 @@ const snClient = instanceUrl
   ? axios.create({
       baseURL: `${instanceUrl}/api/now`,
       auth: { username: user, password: pass },
-      timeout: 15000,
+      timeout: snApiTimeoutMs,
       httpsAgent,
     })
   : null;
@@ -136,7 +149,27 @@ export async function createVariablesInSN(ast, catalogItemId, _updateSetId) {
 
 // BR-11.1: Create update set
 export async function generateUpdateSet(client, ast, artifacts) {
-  if (!snClient) throw new Error("ServiceNow client not initialized. Check SN_INSTANCE_URL in .env");
+  if (!snClient || offlineModeByEnv) {
+    const variableCount = artifacts.variableSet?.variables?.length || ast.variables?.length || 0;
+    return {
+      sys_id: `updateset_${Math.random().toString(36).slice(2, 11)}`,
+      name: `UpdateSet_${ast.name.replace(/\s+/g, "_")}_${Date.now()}`,
+      description: `Auto-generated update set for ${ast.name}`,
+      artifacts: {
+        catalogItem: artifacts.catalogItem ? { sys_id: artifacts.catalogItem.sys_id } : null,
+        variableSet: artifacts.variableSet ? { sys_id: artifacts.variableSet.sys_id, count: variableCount } : null,
+        flow: artifacts.flow ? { sys_id: artifacts.flow.sys_id } : null,
+        approval: artifacts.approval ? { sys_id: artifacts.approval.sys_id } : null,
+        businessRule: artifacts.businessRule ? { sys_id: artifacts.businessRule.sys_id } : null,
+        clientScript: artifacts.clientScript ? { sys_id: artifacts.clientScript.sys_id } : null,
+        testCase: artifacts.testCase ? { sys_id: artifacts.testCase.sys_id } : null,
+        testResult: artifacts.testResult ? { status: artifacts.testResult.status } : null,
+      },
+      status: "generated_offline",
+      ready_for_deployment: false,
+      message: "Offline mode enabled: update set created locally.",
+    };
+  }
 
   console.log("Generating update set for:", ast.name);
 
@@ -173,14 +206,46 @@ export async function generateUpdateSet(client, ast, artifacts) {
       ready_for_deployment: true,
     };
   } catch (err) {
-    console.error("❌ Update set generation failed:", err.response?.data?.error?.message || err.message);
-    throw new Error(`Update set generation failed: ${err.response?.data?.error?.message || err.message}`);
+    const msg = err.response?.data?.error?.message || err.message;
+    if (isConnectivityError(err)) {
+      console.warn("⚠️  Update set API unavailable; using local offline update set.");
+      const variableCount = artifacts.variableSet?.variables?.length || ast.variables?.length || 0;
+      return {
+        sys_id: `updateset_${Math.random().toString(36).slice(2, 11)}`,
+        name: `UpdateSet_${ast.name.replace(/\s+/g, "_")}_${Date.now()}`,
+        description: `Auto-generated update set for ${ast.name}`,
+        artifacts: {
+          catalogItem: artifacts.catalogItem ? { sys_id: artifacts.catalogItem.sys_id } : null,
+          variableSet: artifacts.variableSet ? { sys_id: artifacts.variableSet.sys_id, count: variableCount } : null,
+          flow: artifacts.flow ? { sys_id: artifacts.flow.sys_id } : null,
+          approval: artifacts.approval ? { sys_id: artifacts.approval.sys_id } : null,
+          businessRule: artifacts.businessRule ? { sys_id: artifacts.businessRule.sys_id } : null,
+          clientScript: artifacts.clientScript ? { sys_id: artifacts.clientScript.sys_id } : null,
+          testCase: artifacts.testCase ? { sys_id: artifacts.testCase.sys_id } : null,
+          testResult: artifacts.testResult ? { status: artifacts.testResult.status } : null,
+        },
+        status: "generated_offline",
+        ready_for_deployment: false,
+        message: "Connectivity issue detected: update set created locally.",
+      };
+    }
+    console.error("❌ Update set generation failed:", msg);
+    throw new Error(`Update set generation failed: ${msg}`);
   }
 }
 
 // BR-11.3: Deploy update set to target instance
 export async function deployUpdateSet(client, updateSetId, targetInstance) {
-  if (!snClient) throw new Error("ServiceNow client not initialized");
+  if (!snClient || offlineModeByEnv) {
+    return {
+      deployment_id: `deploy_${Math.random().toString(36).substr(2, 9)}`,
+      update_set_id: updateSetId,
+      target_instance: targetInstance || instanceUrl,
+      status: "simulated",
+      timestamp: new Date().toISOString(),
+      message: "Offline mode enabled: deployment simulated.",
+    };
+  }
 
   const target = targetInstance || instanceUrl;
   console.log("Deploying update set to:", target);
@@ -195,7 +260,7 @@ export async function deployUpdateSet(client, updateSetId, targetInstance) {
       const targetClient = axios.create({
         baseURL: `${targetInstance}/api/now`,
         auth: { username: user, password: pass },
-        timeout: 30000,
+        timeout: snApiTimeoutMs,
         httpsAgent,
       });
 

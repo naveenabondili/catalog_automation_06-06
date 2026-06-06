@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { API_URL } from '../config';
 import TextDiffChecker from './TextDiffChecker';
 import DeployModal from './DeployModal';
+import UpdateCatalogItemModal from './UpdateCatalogItemModal';
 import { useToast } from '../context/ToastContext';
 
 function ArtifactsList({ artifacts, onRefresh, token }) {
@@ -10,6 +11,7 @@ function ArtifactsList({ artifacts, onRefresh, token }) {
   const [activeTab, setActiveTab] = useState({});
   const [showDiff, setShowDiff] = useState(false);
   const [deployModalArtifact, setDeployModalArtifact] = useState(null);
+  const [updateModalArtifact, setUpdateModalArtifact] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [cloning, setCloning] = useState({});
@@ -115,6 +117,14 @@ function ArtifactsList({ artifacts, onRefresh, token }) {
           onDeployed={() => { setDeployModalArtifact(null); onRefresh(); }}
         />
       )}
+      {updateModalArtifact && (
+        <UpdateCatalogItemModal
+          artifact={updateModalArtifact}
+          token={token}
+          onClose={() => setUpdateModalArtifact(null)}
+          onUpdated={() => { setUpdateModalArtifact(null); onRefresh(); }}
+        />
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <h2 style={{ margin: 0 }}>📦 Artifacts <span style={{ fontSize: '13px', color: '#aaa', fontWeight: 'normal' }}>({displayed.length}/{artifacts.length})</span></h2>
@@ -191,6 +201,11 @@ function ArtifactsList({ artifacts, onRefresh, token }) {
                     onClick={() => setDeployModalArtifact(artifact)}
                     style={{ background: '#e74c3c', color: '#fff', fontWeight: '600' }}>
                     🚀 Review &amp; Deploy
+                  </button>
+                  <button className="btn-small"
+                    onClick={() => setUpdateModalArtifact(artifact)}
+                    style={{ background: '#667eea', color: '#fff', fontWeight: '600' }}>
+                    ✏️ Edit / Update
                   </button>
                   <button className="btn-small"
                     onClick={() => handleClone(id)} disabled={cloning[id]}
