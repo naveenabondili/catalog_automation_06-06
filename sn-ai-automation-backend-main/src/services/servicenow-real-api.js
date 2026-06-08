@@ -4,6 +4,7 @@ import fs from "fs";
 import https from "https";
 import path from "path";
 import { fileURLToPath } from "url";
+import { generateBusinessRuleScript, generateClientScript } from "./scripts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, "../../.env") });
@@ -66,6 +67,87 @@ function buildUpdateSetHeaders(updateSetId) {
     "X-Update-Set": updateSetId,
     "X-Update-Set-ID": updateSetId,
   };
+}
+
+function trimName(value, max = 100) {
+  const text = String(value || "").trim();
+  if (!text) return "Auto Generated Script";
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+function buildActionBasedScriptNames(catalogName, variables) {
+  const safeCatalogName = String(catalogName || "Service Request").trim();
+  const hasMandatory = (variables || []).some((v) => !!v.mandatory);
+  const hasChoiceValidation = (variables || []).some((v) => Array.isArray(v.choices) && v.choices.length > 0);
+
+  const brActions = [
+    hasMandatory ? "Validate Mandatory Fields" : "Process Request",
+    "Write Audit Notes",
+  ];
+
+  const csActions = [
+    hasMandatory ? "Validate Mandatory Fields" : "Form Validation",
+    hasChoiceValidation ? "Validate Choices" : "Submit Guard",
+  ];
+
+  return {
+    businessRuleName: trimName(`BR ${safeCatalogName} - ${brActions.join(" + ")}`),
+    clientScriptName: trimName(`CS ${safeCatalogName} - ${csActions.join(" + ")}`),
+  };
+}
+
+async function upsertBusinessRuleForCatalogItem(catalogItemSysId, scriptName, scriptBody, updateSetHeaders, updateSetId) {
+  const query = `collection=sc_req_item^name=${scriptName}^filter_conditionLIKEcat_item=${catalogItemSysId}`;
+  const existing = await client.get(
+    `/table/sys_script?sysparm_query=${encodeURIComponent(query)}&sysparm_fields=sys_id&sysparm_limit=1`
+  );
+
+  const existingSysId = existing.data?.result?.[0]?.sys_id || null;
+  const payload = {
+    name: scriptName,
+    collection: "sc_req_item",
+    when: "before",
+    insert: true,
+    update: true,
+    active: true,
+    script: scriptBody,
+    filter_condition: `cat_item=${catalogItemSysId}`,
+    sys_update_name: updateSetId,
+  };
+
+  if (existingSysId) {
+    const updated = await client.patch(`/table/sys_script/${existingSysId}`, payload, { headers: updateSetHeaders });
+    return { sys_id: updated.data?.result?.sys_id || existingSysId, status: "updated" };
+  }
+
+  const created = await client.post("/table/sys_script", payload, { headers: updateSetHeaders });
+  return { sys_id: created.data?.result?.sys_id, status: "created" };
+}
+
+async function upsertClientScriptForCatalogItem(catalogItemSysId, scriptName, scriptBody, updateSetHeaders, updateSetId) {
+  const query = `cat_item=${catalogItemSysId}^type=onSubmit^name=${scriptName}`;
+  const existing = await client.get(
+    `/table/catalog_script_client?sysparm_query=${encodeURIComponent(query)}&sysparm_fields=sys_id&sysparm_limit=1`
+  );
+
+  const existingSysId = existing.data?.result?.[0]?.sys_id || null;
+  const payload = {
+    name: scriptName,
+    type: "onSubmit",
+    table: "sc_cat_item",
+    cat_item: catalogItemSysId,
+    active: true,
+    script: scriptBody,
+    sys_update_name: updateSetId,
+  };
+
+  if (existingSysId) {
+    const updated = await client.patch(`/table/catalog_script_client/${existingSysId}`, payload, { headers: updateSetHeaders });
+    return { sys_id: updated.data?.result?.sys_id || existingSysId, status: "updated" };
+  }
+
+  const created = await client.post("/table/catalog_script_client", payload, { headers: updateSetHeaders });
+  return { sys_id: created.data?.result?.sys_id, status: "created" };
 }
 
 async function setCurrentUpdateSet(updateSetId) {
@@ -608,7 +690,43 @@ export async function deployToServiceNow(artifacts) {
       deployedIds.approvals = artifacts.approval.approvers;
     }
 
-    // Step 6: Create ATF test suite + steps
+    // Step 6: Create Business Rule + Client Script tied to catalog item
+    try {
+      const scriptContext = {
+        name: cat.name,
+        variables,
+        sla_minutes: Number(cat.sla_minutes) || 480,
+      };
+
+      const { businessRuleName, clientScriptName } = buildActionBasedScriptNames(cat.name, variables);
+      const brScript = generateBusinessRuleScript(scriptContext);
+      const csScript = generateClientScript(scriptContext);
+
+      const brResult = await upsertBusinessRuleForCatalogItem(
+        catalogItemSysId,
+        businessRuleName,
+        brScript,
+        updateSetHeaders,
+        updateSetId
+      );
+      deployedIds.businessRule = brResult.sys_id;
+      console.log(`Business Rule ${brResult.status}: ${businessRuleName} (${brResult.sys_id})`);
+
+      const csResult = await upsertClientScriptForCatalogItem(
+        catalogItemSysId,
+        clientScriptName,
+        csScript,
+        updateSetHeaders,
+        updateSetId
+      );
+      deployedIds.clientScript = csResult.sys_id;
+      console.log(`Client Script ${csResult.status}: ${clientScriptName} (${csResult.sys_id})`);
+    } catch (scriptErr) {
+      const detail = scriptErr.response?.data?.error?.message || scriptErr.message;
+      warnings.push(`Scripts: ${detail}`);
+    }
+
+    // Step 7: Create ATF test suite + steps
     try {
       const atfName = artifacts.testCase?.name || `ATF_${cat.name.replace(/[^a-zA-Z0-9]/g, "_")}_Test`;
 
@@ -682,7 +800,7 @@ export async function deployToServiceNow(artifacts) {
       warnings.push(`ATF test: ${detail}`);
     }
 
-    // Step 7: Mark update set complete
+    // Step 8: Mark update set complete
     try {
       await moveRecentCustomerUpdatesToSet(updateSetId, deploymentStartedAt);
       await client.patch(`/table/sys_update_set/${updateSetId}`, { state: "complete" }, { headers: updateSetHeaders });

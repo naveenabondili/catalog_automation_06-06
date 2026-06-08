@@ -128,6 +128,16 @@ function validateScript(scriptBody, type) {
   return { valid: errors.length === 0, errors };
 }
 
+function buildScriptNames(ast) {
+  const hasMandatory = (ast.variables || []).some((v) => !!v.mandatory);
+  const hasChoices = (ast.variables || []).some((v) => Array.isArray(v.choices) && v.choices.length > 0);
+  const safeName = String(ast.name || "Service_Request").replace(/\s+/g, "_");
+  return {
+    brName: `BR_${safeName}_${hasMandatory ? "Validate_Mandatory" : "Process_Request"}_Audit`,
+    csName: `CS_${safeName}_${hasMandatory ? "Validate_Mandatory" : "Form_Validation"}_${hasChoices ? "Validate_Choices" : "Submit_Guard"}`,
+  };
+}
+
 // BR-08.1: Create Business Rule in ServiceNow
 export async function createBusinessRule(ast, catalogItemId, updateSetId) {
   const scriptBody = generateBusinessRuleScript(ast);
@@ -137,9 +147,10 @@ export async function createBusinessRule(ast, catalogItemId, updateSetId) {
     console.warn("Business rule validation warnings:", validation.errors);
   }
 
+  const scriptNames = buildScriptNames(ast);
   const brLocal = {
     sys_id: `br_${Math.random().toString(36).substr(2, 9)}`,
-    name: `BR_${ast.name.replace(/\s+/g, "_")}`,
+    name: scriptNames.brName,
     table_name: "sc_req_item",
     when: "before",
     insert: true,
@@ -182,9 +193,10 @@ export async function createClientScript(ast, catalogItemId, updateSetId) {
     console.warn("Client script validation warnings:", validation.errors);
   }
 
+  const scriptNames = buildScriptNames(ast);
   const csLocal = {
     sys_id: `cs_${Math.random().toString(36).substr(2, 9)}`,
-    name: `CS_${ast.name.replace(/\s+/g, "_")}`,
+    name: scriptNames.csName,
     type: "onSubmit",
     table: "sc_cat_item",
     catalog_item: catalogItemId,
